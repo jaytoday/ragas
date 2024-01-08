@@ -1,34 +1,25 @@
 from __future__ import annotations
 
-import logging
 import os
-import typing as t
 from functools import lru_cache
-from warnings import warn
 
-import torch
-from torch import device as Device
-
-DEVICES = ["cpu", "cuda"]
 DEBUG_ENV_VAR = "RAGAS_DEBUG"
+# constant to tell us that there is no key passed to the llm/embeddings
+NO_KEY = "no-key"
 
 
-def device_check(device: t.Literal["cpu", "cuda"] | Device) -> torch.device:
-    if isinstance(device, Device):
-        return device
-    if device not in DEVICES:
-        raise ValueError(f"Invalid device {device}")
-    if device == "cuda" and not torch.cuda.is_available():
-        warn("cuda not available, using cpu")
-        device = "cpu"
-
-    return torch.device(device)
+@lru_cache(maxsize=1)
+def get_cache_dir() -> str:
+    "get cache location"
+    DEFAULT_XDG_CACHE_HOME = "~/.cache"
+    xdg_cache = os.getenv("XDG_CACHE_HOME", DEFAULT_XDG_CACHE_HOME)
+    default_ragas_cache = os.path.join(xdg_cache, "ragas")
+    return os.path.expanduser(os.getenv("RAGAS_CACHE_HOME", default_ragas_cache))
 
 
 @lru_cache(maxsize=1)
 def get_debug_mode() -> bool:
     if os.environ.get(DEBUG_ENV_VAR, str(False)).lower() == "true":
-        logging.basicConfig(level=logging.DEBUG)
         return True
     else:
         return False

@@ -8,32 +8,18 @@ from __future__ import annotations
 
 import typing as t
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
-from math import floor
 
-from datasets import Dataset
-from langchain.chat_models import ChatOpenAI
-from langchain.chat_models.base import BaseChatModel
-from langchain.llms.base import BaseLLM
+from ragas.callbacks import new_group
 
+if t.TYPE_CHECKING:
+    from langchain_core.callbacks import Callbacks
 
-def make_batches(total_size: int, batch_size: int) -> list[range]:
-    """
-    Take a total size and batch size and return a list of ranges for the batches
-    """
-    tail = total_size % batch_size
-    num_batches = floor(total_size / batch_size)
-    batches = [
-        range(i, i + batch_size) for i in range(0, batch_size * num_batches, batch_size)
-    ]
-    if tail != 0:
-        batches.append(range(batch_size * num_batches, batch_size * num_batches + tail))
-
-    return batches
+    from ragas.llms import BaseRagasLLM
 
 
-EvaluationMode = Enum("EvaluationMode", "qac qa qc ga")
+EvaluationMode = Enum("EvaluationMode", "qac qa qc gc ga qga qcg")
 
 
 @dataclass
@@ -51,24 +37,82 @@ class Metric(ABC):
         ...
 
     @abstractmethod
-    def init_model():
+    def init_model(self):
         """
         This method will lazy initialize the model.
         """
         ...
 
+    def adapt(self, language: str, cache_dir: t.Optional[str] = None) -> None:
+        """
+        Adapt the metric to a different language.
+        """
+        raise NotImplementedError(
+            "adapt() is not implemented for {} metric".format(self.name)
+        )
+
+    def save(self, cache_dir: t.Optional[str] = None) -> None:
+        """
+        Save the metric to a path.
+        """
+        raise NotImplementedError(
+            "adapt() is not implemented for {} metric".format(self.name)
+        )
+
+    def score(
+        self: t.Self,
+        row: t.Dict,
+        callbacks: Callbacks = [],
+    ) -> float:
+        rm, group_cm = new_group(
+            self.name, inputs=row, callbacks=callbacks, is_async=False
+        )
+        try:
+            score = self._score(row=row, callbacks=group_cm)
+        except Exception as e:
+            if not group_cm.ended:
+                rm.on_chain_error(e)
+            raise e
+        else:
+            if not group_cm.ended:
+                rm.on_chain_end({"output": score})
+        return score
+
     @abstractmethod
-    def score(self: t.Self, dataset: Dataset) -> Dataset:
+    def _score(self, row: t.Dict, callbacks: Callbacks) -> float:
         ...
 
-    def get_batches(self, dataset_size: int) -> list[range]:
-        return make_batches(dataset_size, self.batch_size)
+    async def ascore(self: t.Self, row: t.Dict, callbacks: Callbacks = []) -> float:
+        rm, group_cm = new_group(
+            self.name, inputs=row, callbacks=callbacks, is_async=True
+        )
+        try:
+            score = await self._ascore(row=row, callbacks=group_cm)
+        except Exception as e:
+            if not group_cm.ended:
+                rm.on_chain_error(e)
+            raise e
+        else:
+            if not group_cm.ended:
+                rm.on_chain_end({"output": score})
+        return score
 
-
-def _llm_factory():
-    return ChatOpenAI(model_name="gpt-3.5-turbo-16k")  # type: ignore
+    @abstractmethod
+    async def _ascore(self, row: t.Dict, callbacks: Callbacks) -> float:
+        ...
 
 
 @dataclass
 class MetricWithLLM(Metric):
-    llm: BaseLLM | BaseChatModel = field(default_factory=_llm_factory)
+    llm: t.Optional[BaseRagasLLM] = None
+
+    def init_model(self):
+        """
+        Init any models in the metric, this is invoked before evaluate()
+        to load all the models
+        Also check if the api key is valid for OpenAI and AzureOpenAI
+        """
+        if self.llm is None:
+            raise ValueError(
+                f"Metric '{self.name}' has no valid LLM provided (self.llm is None). Please initantiate a the metric with an LLM to run."  # noqa
+            )
